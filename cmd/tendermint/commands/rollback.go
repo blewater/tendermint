@@ -45,7 +45,34 @@ func RollbackState(config *cfg.Config) (int64, []byte, error) {
 	}
 
 	// rollback the last state
-	return state.Rollback(blockStore, stateStore)
+	height, hash, err := state.Rollback(blockStore, stateStore)
+	if err != nil {
+		return -1, nil, err
+	}
+
+	_, err = purgeBlocks(height, blockStore, stateStore)
+
+	return height, hash, err
+}
+
+func purgeBlocks(purgeHgt int64, blockStore *store.BlockStore, ss state.Store) (uint64, error) {
+	base := blockStore.Base()
+	if purgeHgt <= base {
+		return 0, nil
+	}
+	if purgeHgt > blockStore.Height() {
+		return 0, nil
+	}
+	purgedCnt, err := blockStore.PurgeBlocks(purgeHgt)
+	if err != nil {
+		return 0, fmt.Errorf("failed to purge block store: %w", err)
+	}
+	err = ss.PruneStates(purgeHgt, blockStore.Height()+1)
+	if err != nil {
+		return 0, fmt.Errorf("failed to purge state database: %w", err)
+	}
+
+	return purgedCnt, nil
 }
 
 func loadStateAndBlockStore(config *cfg.Config) (*store.BlockStore, state.Store, error) {
