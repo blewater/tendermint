@@ -322,6 +322,91 @@ func (bs *BlockStore) PruneBlocks(height int64) (uint64, error) {
 	return pruned, nil
 }
 
+// PurgeBlocks removes the blocks from a given height till the latest.
+// It returns number of blocks removed.
+func (bs *BlockStore) PurgeBlocks(height int64) (uint64, error) {
+	if height <= 0 {
+		return 0, fmt.Errorf("height must be greater than 0")
+	}
+	bs.mtx.RLock()
+	if height > bs.height {
+		bs.mtx.RUnlock()
+		return 0, fmt.Errorf("cannot prune beyond the latest height %v", bs.height)
+	}
+	base := bs.base
+	bs.mtx.RUnlock()
+	if height < base {
+		return 0, fmt.Errorf("cannot prune to height %v, it is lower than base height %v",
+			height, base)
+	}
+
+	sizeBefore := bs.Size()
+	heightBefore := bs.height
+	purged := uint64(0)
+	batch := bs.db.NewBatch()
+	defer batch.Close()
+	flush := func(batch dbm.Batch, base int64) error {
+		// We can't trust batches to be atomic, so update base first to make sure none
+		// tries to access missing blocks.
+		bs.mtx.Lock()
+		if int64(purged) == sizeBefore {
+			bs.base = 0
+		}
+		bs.height = heightBefore - int64(purged)
+		bs.mtx.Unlock()
+		bs.saveState()
+
+		err := batch.WriteSync()
+		if err != nil {
+			return fmt.Errorf("failed to prune up to height %v: %w", base, err)
+		}
+		batch.Close()
+		return nil
+	}
+
+	var h int64
+	for h = bs.height; h >= height; h-- {
+		meta := bs.LoadBlockMeta(h)
+		if meta == nil { // assume already deleted
+			continue
+		}
+		if err := batch.Delete(calcBlockMetaKey(h)); err != nil {
+			return 0, err
+		}
+		if err := batch.Delete(calcBlockHashKey(meta.BlockID.Hash)); err != nil {
+			return 0, err
+		}
+		if err := batch.Delete(calcBlockCommitKey(h)); err != nil {
+			return 0, err
+		}
+		if err := batch.Delete(calcSeenCommitKey(h)); err != nil {
+			return 0, err
+		}
+		for p := 0; p < int(meta.BlockID.PartSetHeader.Total); p++ {
+			if err := batch.Delete(calcBlockPartKey(h, p)); err != nil {
+				return 0, err
+			}
+		}
+		purged++
+
+		// flush every 1000 blocks to avoid batches becoming too large
+		if purged%1000 == 0 && purged > 0 {
+			err := flush(batch, h)
+			if err != nil {
+				return 0, err
+			}
+			batch = bs.db.NewBatch()
+			defer batch.Close()
+		}
+	}
+
+	err := flush(batch, height)
+	if err != nil {
+		return 0, err
+	}
+	return purged, nil
+}
+
 // SaveBlock persists the given block, blockParts, and seenCommit to the underlying db.
 // blockParts: Must be parts of the block
 // seenCommit: The +2/3 precommits that were seen which committed at height.

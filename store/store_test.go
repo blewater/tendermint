@@ -509,6 +509,91 @@ func TestPruneBlocks(t *testing.T) {
 	assert.Nil(t, bs.LoadBlock(1501))
 }
 
+func TestPurgeBlocks(t *testing.T) {
+	config := cfg.ResetTestRoot("blockchain_reactor_test")
+	defer os.RemoveAll(config.RootDir)
+	stateStore := sm.NewStore(dbm.NewMemDB())
+	state, err := stateStore.LoadFromDBOrGenesisFile(config.GenesisFile())
+	require.NoError(t, err)
+	db := dbm.NewMemDB()
+	bs := NewBlockStore(db)
+	assert.EqualValues(t, 0, bs.Base())
+	assert.EqualValues(t, 0, bs.Height())
+	assert.EqualValues(t, 0, bs.Size())
+
+	// pruning an empty store should error, even when pruning to 0
+	_, err = bs.PurgeBlocks(1)
+	require.Error(t, err)
+
+	purged, err := bs.PurgeBlocks(0)
+	require.Error(t, err)
+	require.Equal(t, purged, uint64(0))
+
+	// make more than 1000 blocks, to test batch deletions
+	for h := int64(1); h <= 1500; h++ {
+		block := makeBlock(h, state, new(types.Commit))
+		partSet := block.MakePartSet(2)
+		seenCommit := makeTestCommit(h, tmtime.Now())
+		bs.SaveBlock(block, partSet, seenCommit)
+	}
+
+	assert.EqualValues(t, uint64(0), purged)
+	assert.EqualValues(t, 1, bs.Base())
+	assert.EqualValues(t, 1500, bs.Height())
+	assert.EqualValues(t, 1500, bs.Size())
+
+	prunedBlock := bs.LoadBlock(1500)
+	fmt.Println(prunedBlock)
+
+	// Check that basic purging works
+	pruned, err := bs.PurgeBlocks(1500)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, pruned)
+	assert.EqualValues(t, 1, bs.Base())
+	assert.EqualValues(t, 1499, bs.Height())
+	assert.EqualValues(t, 1499, bs.Size())
+	assert.EqualValues(t, tmstore.BlockStoreState{
+		Base:   1,
+		Height: 1499,
+	}, LoadBlockStoreState(db))
+
+	require.Nil(t, bs.LoadBlock(1500))
+	require.NotNil(t, bs.LoadBlock(1499))
+	require.Nil(t, bs.LoadBlockByHash(prunedBlock.Hash()))
+	require.Nil(t, bs.LoadBlockCommit(1500))
+	require.Nil(t, bs.LoadBlockMeta(1500))
+	require.Nil(t, bs.LoadBlockPart(1500, 1))
+
+	for i := int64(1); i < 1500; i++ {
+		require.NotNil(t, bs.LoadBlock(i))
+	}
+
+	// Pruning below the current base should error
+	_, err = bs.PurgeBlocks(1500)
+	require.Error(t, err)
+
+	// Pruning to the current base should work
+	pruned, err = bs.PurgeBlocks(1300)
+	require.NoError(t, err)
+	assert.EqualValues(t, 200, pruned)
+	assert.EqualValues(t, 1, bs.Base())
+	assert.EqualValues(t, 1299, bs.Size())
+	assert.EqualValues(t, 1299, bs.Height())
+
+	// Pruning beyond the current height should error
+	_, err = bs.PurgeBlocks(1300)
+	require.Error(t, err)
+
+	// Pruning to the current height should work
+	pruned, err = bs.PurgeBlocks(1)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1299, pruned)
+	assert.Nil(t, bs.LoadBlock(1))
+	assert.Nil(t, bs.LoadBlock(0))
+	assert.Equal(t, int64(0), bs.Height())
+	assert.Equal(t, int64(0), bs.Size())
+}
+
 func TestLoadBlockMeta(t *testing.T) {
 	bs, db := freshBlockStore()
 	height := int64(10)
