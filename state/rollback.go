@@ -13,18 +13,16 @@ import (
 // recent previous state (height n - 1).
 // Note that this function does not affect application state.
 func Rollback(bs BlockStore, ss Store) (int64, []byte, error) {
-	invalidState, err := ss.Load()
+	invalidState, rollbackHeight, err := GetLastBlockHeight(ss)
 	if err != nil {
 		return -1, nil, err
 	}
-	if invalidState.IsEmpty() {
-		return -1, nil, errors.New("no state found")
-	}
 
-	rollbackHeight := invalidState.LastBlockHeight
 	rollbackBlock := bs.LoadBlockMeta(rollbackHeight)
 	if rollbackBlock == nil {
-		return -1, nil, fmt.Errorf("block at height %d not found", rollbackHeight)
+		return -1, nil, fmt.Errorf(
+			"block at height %d not found", rollbackHeight,
+		)
 	}
 
 	previousValidatorSet, err := ss.LoadValidators(rollbackHeight - 1)
@@ -86,4 +84,18 @@ func Rollback(bs BlockStore, ss Store) (int64, []byte, error) {
 	}
 
 	return rolledBackState.LastBlockHeight, rolledBackState.AppHash, nil
+}
+
+func GetLastBlockHeight(ss Store) (State, int64, error) {
+	state, err := ss.Load()
+	if err != nil {
+		return State{}, 0, err
+	}
+	if state.IsEmpty() {
+		return State{}, 0, errors.New("no state found")
+	}
+
+	rollbackHeight := state.LastBlockHeight
+
+	return state, rollbackHeight, nil
 }

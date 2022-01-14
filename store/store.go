@@ -333,12 +333,8 @@ func (bs *BlockStore) PurgeBlocks(height int64) (uint64, error) {
 		bs.mtx.RUnlock()
 		return 0, fmt.Errorf("cannot prune beyond the latest height %v", bs.height)
 	}
-	base := bs.base
+	initBase := bs.base
 	bs.mtx.RUnlock()
-	if height < base {
-		return 0, fmt.Errorf("cannot prune to height %v, it is lower than base height %v",
-			height, base)
-	}
 
 	sizeBefore := bs.Size()
 	heightBefore := bs.height
@@ -349,6 +345,12 @@ func (bs *BlockStore) PurgeBlocks(height int64) (uint64, error) {
 		// We can't trust batches to be atomic, so update base first to make sure none
 		// tries to access missing blocks.
 		bs.mtx.Lock()
+		if initBase > height {
+			bs.base = height - 1
+			if bs.base < 0 {
+				bs.base = 0
+			}
+		}
 		if int64(purged) == sizeBefore {
 			bs.base = 0
 		}

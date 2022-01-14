@@ -44,22 +44,20 @@ func RollbackState(config *cfg.Config) (int64, []byte, error) {
 		return -1, nil, err
 	}
 
-	// rollback the last state
-	height, hash, err := state.Rollback(blockStore, stateStore)
+	_, height, err := state.GetLastBlockHeight(stateStore)
 	if err != nil {
 		return -1, nil, err
 	}
 
 	_, err = purgeBlocks(height, blockStore, stateStore)
+	if err != nil {
+		return -1, nil, err
+	}
 
-	return height, hash, err
+	return height, nil, nil
 }
 
 func purgeBlocks(purgeHgt int64, blockStore *store.BlockStore, ss state.Store) (uint64, error) {
-	base := blockStore.Base()
-	if purgeHgt <= base {
-		return 0, nil
-	}
 	if purgeHgt > blockStore.Height() {
 		return 0, nil
 	}
